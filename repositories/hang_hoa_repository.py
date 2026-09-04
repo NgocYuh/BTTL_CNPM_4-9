@@ -1,6 +1,8 @@
 """
-Repository: HangHoaRepository (Kho lưu trữ dữ liệu Hàng hóa)
-Phụ trách: Thành viên 3 (TV3) - Quản lý danh mục hàng hóa / CRUD
+Repository: HangHoaRepository (Kho lưu trữ dữ liệu Hàng hóa & Thống kê)
+Phụ trách: 
+    - Thành viên 3 (TV3): Quản lý danh mục hàng hóa / CRUD
+    - Thành viên 5 (TV5): Thống kê tổng số lượng & tồn kho
 Dự án: QuanLyHangHoa (Cửa hàng kinh doanh Gear Công Nghệ)
 Đồng bộ: Tương tác với SQL Server qua config.database và Stored Procedure của TV2
 """
@@ -14,6 +16,41 @@ from models.hang_hoa import HangHoa
 logger = logging.getLogger(__name__)
 
 
+def _get_db_connection():
+    """Hàm trợ giúp lấy kết nối CSDL từ config.database hoặc kết nối trực tiếp (hỗ trợ code TV5)."""
+    try:
+        conn = get_connection()
+        if conn is not None:
+            return conn
+    except Exception:
+        pass
+
+    # Fallback kết nối trực tiếp nếu config.database chưa hoàn thiện hoặc dùng driver khác
+    try:
+        import pyodbc
+        server = "localhost"
+        database = "QuanLyGearCongNghe"
+        drivers = [
+            "ODBC Driver 18 for SQL Server",
+            "ODBC Driver 17 for SQL Server",
+            "SQL Server Native Client 11.0",
+            "SQL Server",
+        ]
+        available_drivers = pyodbc.drivers()
+        selected_driver = "SQL Server"
+        for d in drivers:
+            if d in available_drivers:
+                selected_driver = d
+                break
+
+        conn_str = f"DRIVER={{{selected_driver}}};SERVER={server};DATABASE={database};Trusted_Connection=yes;"
+        if "ODBC Driver 18" in selected_driver:
+            conn_str += "TrustServerCertificate=yes;"
+        return pyodbc.connect(conn_str, timeout=5)
+    except Exception as exc:
+        raise RuntimeError("Không thể kết nối SQL Server.") from exc
+
+
 class HangHoaRepository:
     """
     Tầng Data Access Layer (DAL) chịu trách nhiệm tương tác trực tiếp với SQL Server:
@@ -23,6 +60,7 @@ class HangHoaRepository:
             + sp_HangHoa_Update
             + sp_HangHoa_Delete
             + sp_DanhMuc_GetAll
+            + sp_HangHoa_Statistics
         - Tuyệt đối dùng Parameterized Query / Stored Procedure để ngăn ngừa SQL Injection.
         - Tự động đóng mở kết nối (Context Manager).
         - Cơ chế Mock Data dự phòng trong RAM khi chưa kết nối được CSDL (hỗ trợ dev & test offline).
@@ -87,7 +125,7 @@ class HangHoaRepository:
             return False
 
     # =========================================================================
-    # 1. READ: LẤY DANH SÁCH & CHI TIẾT
+    # 1. READ: LẤY DANH SÁCH & CHI TIẾT (TV3)
     # =========================================================================
 
     def get_all(self) -> List[HangHoa]:
@@ -101,7 +139,6 @@ class HangHoaRepository:
                     try:
                         cursor.execute("EXEC dbo.sp_HangHoa_GetAll;")
                     except Exception:
-                        # Phương án fallback SQL query nếu chưa tạo SP
                         sql = """
                             SELECT h.MaHang, h.TenHang, h.MaDanhMuc, d.TenDanhMuc,
                                    h.DonGia, h.SoLuongTon, h.TrangThai, h.MoTa, h.NgayTao
@@ -123,9 +160,7 @@ class HangHoaRepository:
             raise
 
     def get_by_id(self, ma_hang: str) -> Optional[HangHoa]:
-        """
-        Lấy thông tin chi tiết một mặt hàng theo mã hàng.
-        """
+        """Lấy thông tin chi tiết một mặt hàng theo mã hàng."""
         ma_hang = str(ma_hang).strip()
         try:
             with get_connection() as conn:
@@ -168,7 +203,7 @@ class HangHoaRepository:
             raise
 
     # =========================================================================
-    # 2. CREATE: THÊM MỚI HÀNG HÓA
+    # 2. CREATE: THÊM MỚI HÀNG HÓA (TV3)
     # =========================================================================
 
     def insert(self, hang_hoa: HangHoa) -> bool:
@@ -204,7 +239,6 @@ class HangHoaRepository:
             if self.use_mock_fallback:
                 if any(x.ma_hang.upper() == hang_hoa.ma_hang.upper() for x in self._in_memory_db):
                     raise ValueError(f"Mã hàng hóa '{hang_hoa.ma_hang}' đã tồn tại.")
-                # Cập nhật tên danh mục hiển thị nếu chưa có
                 if not hang_hoa.ten_danh_muc:
                     dm = next((d for d in self.DEFAULT_DANH_MUC if d["ma_danh_muc"] == hang_hoa.ma_danh_muc), None)
                     if dm:
@@ -214,7 +248,7 @@ class HangHoaRepository:
             raise
 
     # =========================================================================
-    # 3. UPDATE: SỬA HÀNG HÓA
+    # 3. UPDATE: SỬA HÀNG HÓA (TV3)
     # =========================================================================
 
     def update(self, hang_hoa: HangHoa) -> bool:
@@ -270,7 +304,7 @@ class HangHoaRepository:
             raise
 
     # =========================================================================
-    # 4. DELETE: XÓA HÀNG HÓA
+    # 4. DELETE: XÓA HÀNG HÓA (TV3)
     # =========================================================================
 
     def delete(self, ma_hang: str) -> bool:
@@ -326,3 +360,131 @@ class HangHoaRepository:
         except Exception as error:
             logger.warning("Không thể tải danh mục từ SQL Server: %s", error)
             return list(self.DEFAULT_DANH_MUC)
+
+    # =========================================================================
+    # 6. CÁC PHƯƠNG THỨC THỐNG KÊ (THÀNH VIÊN 5)
+    # =========================================================================
+
+    def get_total_product_types(self) -> int:
+        """Lấy tổng số loại hàng (tổng số bản ghi hàng hóa trong HangHoa)."""
+        try:
+            conn = _get_db_connection()
+            try:
+                cursor = conn.cursor()
+                try:
+                    cursor.execute("SELECT COUNT(*) AS TongSoLoaiHang FROM dbo.HangHoa;")
+                    row = cursor.fetchone()
+                except Exception:
+                    cursor.execute("{CALL sp_ThongKe_TongSoLoaiHang}")
+                    row = cursor.fetchone()
+
+                if row and row[0] is not None:
+                    return int(row[0])
+                return 0
+            finally:
+                conn.close()
+        except Exception as error:
+            logger.warning("Không thể truy vấn CSDL cho thống kê số loại hàng: %s", error)
+            if self.use_mock_fallback:
+                return len(self._in_memory_db)
+            return 0
+
+    def get_total_quantity(self) -> int:
+        """Lấy tổng số lượng hàng tồn kho."""
+        try:
+            conn = _get_db_connection()
+            try:
+                cursor = conn.cursor()
+                try:
+                    cursor.execute("SELECT COALESCE(SUM(SoLuongTon), 0) AS TongSoLuong FROM dbo.HangHoa;")
+                    row = cursor.fetchone()
+                except Exception:
+                    cursor.execute("SELECT COALESCE(SUM(SoLuong), 0) AS TongSoLuong FROM dbo.HangHoa;")
+                    row = cursor.fetchone()
+
+                if row and row[0] is not None:
+                    return int(row[0])
+                return 0
+            finally:
+                conn.close()
+        except Exception as error:
+            logger.warning("Không thể truy vấn CSDL cho thống kê tổng số lượng: %s", error)
+            if self.use_mock_fallback:
+                return sum(x.so_luong_ton for x in self._in_memory_db)
+            return 0
+
+    def get_total_inventory_value(self) -> float:
+        """Lấy tổng giá trị tồn kho = SUM(DonGia * SoLuongTon)."""
+        try:
+            conn = _get_db_connection()
+            try:
+                cursor = conn.cursor()
+                try:
+                    cursor.execute("SELECT COALESCE(SUM(DonGia * SoLuongTon), 0) AS TongGiaTriTonKho FROM dbo.HangHoa;")
+                    row = cursor.fetchone()
+                except Exception:
+                    cursor.execute("SELECT COALESCE(SUM(DonGia * SoLuong), 0) AS TongGiaTriTonKho FROM dbo.HangHoa;")
+                    row = cursor.fetchone()
+
+                if row and row[0] is not None:
+                    return float(row[0])
+                return 0.0
+            finally:
+                conn.close()
+        except Exception as error:
+            logger.warning("Không thể truy vấn CSDL cho thống kê tổng giá trị: %s", error)
+            if self.use_mock_fallback:
+                return sum(x.don_gia * x.so_luong_ton for x in self._in_memory_db)
+            return 0.0
+
+    def get_statistics_by_category(self) -> List[Dict[str, Any]]:
+        """
+        Lấy thống kê theo từng danh mục:
+        Mã danh mục, Tên danh mục, Số loại hàng, Tổng số lượng, Tổng giá trị.
+        """
+        try:
+            conn = _get_db_connection()
+            try:
+                cursor = conn.cursor()
+                sql = """
+                    SELECT
+                        dm.MaDanhMuc,
+                        dm.TenDanhMuc,
+                        COUNT(hh.MaHang) AS SoLoaiHang,
+                        COALESCE(SUM(hh.SoLuongTon), 0) AS TongSoLuong,
+                        COALESCE(SUM(hh.DonGia * hh.SoLuongTon), 0) AS TongGiaTri
+                    FROM dbo.DanhMuc dm
+                    LEFT JOIN dbo.HangHoa hh ON dm.MaDanhMuc = hh.MaDanhMuc
+                    GROUP BY dm.MaDanhMuc, dm.TenDanhMuc
+                    ORDER BY dm.MaDanhMuc;
+                """
+                cursor.execute(sql)
+                rows = cursor.fetchall()
+
+                result = []
+                for row in rows:
+                    result.append({
+                        "MaDanhMuc": row[0] if row[0] is not None else "",
+                        "TenDanhMuc": row[1] if row[1] is not None else "",
+                        "SoLoaiHang": int(row[2]) if row[2] is not None else 0,
+                        "TongSoLuong": int(row[3]) if row[3] is not None else 0,
+                        "TongGiaTri": float(row[4]) if row[4] is not None else 0.0,
+                    })
+                return result
+            finally:
+                conn.close()
+        except Exception as error:
+            logger.warning("Không thể truy vấn CSDL cho thống kê theo danh mục: %s", error)
+            if self.use_mock_fallback:
+                result = []
+                for dm in self.DEFAULT_DANH_MUC:
+                    items = [x for x in self._in_memory_db if x.ma_danh_muc == dm["ma_danh_muc"]]
+                    result.append({
+                        "MaDanhMuc": dm["ma_danh_muc"],
+                        "TenDanhMuc": dm["ten_danh_muc"],
+                        "SoLoaiHang": len(items),
+                        "TongSoLuong": sum(x.so_luong_ton for x in items),
+                        "TongGiaTri": sum(x.don_gia * x.so_luong_ton for x in items),
+                    })
+                return result
+            return []
