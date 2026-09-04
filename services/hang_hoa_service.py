@@ -70,33 +70,41 @@ class HangHoaService:
             return self.repository.DEFAULT_DANH_MUC
 
     # =========================================================================
-    # 2. VALIDATION NGHIỆP VỤ CƠ BẢN
+    # 2. VALIDATION NGHIỆP VỤ (ĐỒNG BỘ VỚI TV4 - utils.validators)
     # =========================================================================
 
     def kiem_tra_du_lieu_hang_hoa(self, hang_hoa: HangHoa, is_update: bool = False) -> Tuple[bool, str]:
         """
-        Kiểm tra tính hợp lệ cơ bản của dữ liệu hàng hóa trước khi lưu vào CSDL.
+        Kiểm tra tính hợp lệ của dữ liệu hàng hóa trước khi lưu vào CSDL.
+        Sử dụng trực tiếp các hàm validation từ utils.validators của TV4.
         """
-        if not hang_hoa.ma_hang or not hang_hoa.ma_hang.strip():
-            return False, "Mã hàng hóa không được để trống."
-
-        if len(hang_hoa.ma_hang.strip()) > 20:
-            return False, "Mã hàng hóa không được vượt quá 20 ký tự."
-
-        if not hang_hoa.ten_hang or not hang_hoa.ten_hang.strip():
-            return False, "Tên hàng hóa không được để trống."
-
-        if len(hang_hoa.ten_hang.strip()) > 150:
-            return False, "Tên hàng hóa không được vượt quá 150 ký tự."
-
-        if not hang_hoa.ma_danh_muc or not hang_hoa.ma_danh_muc.strip():
-            return False, "Vui lòng chọn danh mục cho hàng hóa."
-
-        if hang_hoa.don_gia < 0:
-            return False, "Đơn giá không được nhỏ hơn 0."
-
-        if hang_hoa.so_luong_ton < 0:
-            return False, "Số lượng tồn không được nhỏ hơn 0."
+        try:
+            from utils.validators import validate_hang_hoa
+            hop_le, msg = validate_hang_hoa(
+                ma_hang=hang_hoa.ma_hang,
+                ten_hang=hang_hoa.ten_hang,
+                ma_danh_muc=hang_hoa.ma_danh_muc,
+                don_gia=hang_hoa.don_gia,
+                so_luong=hang_hoa.so_luong_ton,
+            )
+            if not hop_le:
+                return False, msg
+        except ImportError:
+            # Fallback kiểm tra nội bộ nếu utils.validators chưa có sẵn
+            if not hang_hoa.ma_hang or not hang_hoa.ma_hang.strip():
+                return False, "Mã hàng hóa không được để trống."
+            if len(hang_hoa.ma_hang.strip()) > 20:
+                return False, "Mã hàng hóa không được vượt quá 20 ký tự."
+            if not hang_hoa.ten_hang or not hang_hoa.ten_hang.strip():
+                return False, "Tên hàng hóa không được để trống."
+            if len(hang_hoa.ten_hang.strip()) > 150:
+                return False, "Tên hàng hóa không được vượt quá 150 ký tự."
+            if not hang_hoa.ma_danh_muc or not hang_hoa.ma_danh_muc.strip():
+                return False, "Vui lòng chọn danh mục cho hàng hóa."
+            if hang_hoa.don_gia < 0:
+                return False, "Đơn giá không được nhỏ hơn 0."
+            if hang_hoa.so_luong_ton < 0:
+                return False, "Số lượng tồn không được nhỏ hơn 0."
 
         return True, "Dữ liệu hợp lệ."
 

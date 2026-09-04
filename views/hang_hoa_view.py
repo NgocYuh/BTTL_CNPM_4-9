@@ -14,6 +14,31 @@ from typing import List, Optional
 from models.hang_hoa import HangHoa
 from services.hang_hoa_service import HangHoaService
 
+# Thử import từ utils.helpers của TV1, hỗ trợ fallback an toàn
+try:
+    from utils.helpers import (
+        format_currency,
+        show_error_message,
+        show_info_message,
+        show_success_message,
+    )
+except ImportError:
+    def format_currency(v):
+        try:
+            return f"{float(v or 0):,.0f} đ"
+        except Exception:
+            return "0 đ"
+
+    def show_error_message(message, title="Lỗi"):
+        messagebox.showerror(title, message)
+
+    def show_success_message(message, title="Thành công"):
+        messagebox.showinfo(title, message)
+
+    def show_info_message(message, title="Thông báo"):
+        messagebox.showinfo(title, message)
+
+
 
 class HangHoaView(ttk.Frame):
     """
@@ -511,6 +536,37 @@ class HangHoaView(ttk.Frame):
         self.var_search.set("")
         self.var_filter_danh_muc.set("Tất cả danh mục")
         self.load_data()
+
+    # =========================================================================
+    # 5. KẾT NỐI VỚI MAIN WINDOW & HOME VIEW (TV1)
+    # =========================================================================
+
+    def set_search_keyword(self, keyword: str) -> None:
+        """
+        Nhận từ khóa tìm kiếm được truyền từ Header / HomeView của MainWindow.
+        """
+        if keyword:
+            self.var_search.set(str(keyword).strip())
+            self.on_tim_kiem()
+
+    def set_category_filter(self, category_name: str) -> None:
+        """
+        Nhận danh mục được chọn từ trang HomeView / Menu của MainWindow.
+        """
+        if not category_name:
+            return
+
+        category_name = str(category_name).strip()
+        # Tìm danh mục phù hợp trong danh sách combobox
+        for val in self.cbo_filter_dm["values"]:
+            if val.lower() == category_name.lower():
+                self.var_filter_danh_muc.set(val)
+                self.on_filter_danh_muc()
+                return
+
+        # Nếu không khớp chính xác, thử tìm kiếm theo từ khóa
+        self.set_search_keyword(category_name)
+
 
 
 # Khối hỗ trợ chạy thử nghiệm giao diện độc lập
